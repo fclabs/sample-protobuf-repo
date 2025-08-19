@@ -12,9 +12,10 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-OUTPUT_DIR="$PROJECT_ROOT/generated/python"
+OUTPUT_DIR="$PROJECT_ROOT/generated"
 PROTO_DIR="$PROJECT_ROOT/src"
 CONTAINER_NAME="protobuf-python-builder"
+TARGET_DIR="$PROJECT_ROOT/dist/python"
 
 # Default values
 PYTHON_VERSION="3.11"
@@ -22,6 +23,23 @@ GRPC_VERSION="1.59.0"
 PROTOC_VERSION="25.1"
 CLEAN_BUILD=false
 VERBOSE=false
+
+# Function to detect protoc platform
+detect_protoc_platform() {
+    local arch=$(uname -m)
+    case "$arch" in
+        x86_64)
+            echo "linux-x86_64"
+            ;;
+        aarch64|arm64)
+            echo "linux-aarch_64"
+            ;;
+        *)
+            print_error "Unsupported architecture: $arch"
+            exit 1
+            ;;
+    esac
+}
 
 # Function to print colored output
 print_status() {
@@ -134,11 +152,16 @@ build_docker_image() {
         exit 1
     fi
     
+    # Detect protoc platform
+    local protoc_platform=$(detect_protoc_platform)
+    print_status "Detected platform: $(uname -m) -> protoc platform: $protoc_platform"
+    
     if [[ "$VERBOSE" == true ]]; then
         docker build \
             --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
             --build-arg GRPC_VERSION="$GRPC_VERSION" \
             --build-arg PROTOC_VERSION="$PROTOC_VERSION" \
+            --build-arg PROTOC_PLATFORM="$protoc_platform" \
             -f "$dockerfile_path" \
             -t "$CONTAINER_NAME" \
             "$PROJECT_ROOT"
@@ -147,6 +170,7 @@ build_docker_image() {
             --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
             --build-arg GRPC_VERSION="$GRPC_VERSION" \
             --build-arg PROTOC_VERSION="$PROTOC_VERSION" \
+            --build-arg PROTOC_PLATFORM="$protoc_platform" \
             -f "$dockerfile_path" \
             -t "$CONTAINER_NAME" \
             "$PROJECT_ROOT" > /dev/null
@@ -168,19 +192,21 @@ generate_code() {
     
     # Generate Python code using docker-compose exec
     docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T python-builder bash -c "
-        # Generate Python code
-        python -m grpc_tools.protoc \\
+        # Find all proto files and generate Python code
+        find /workspace/src -name '*.proto' -exec python -m grpc_tools.protoc \\
             --python_out=/workspace/generated \\
             --grpc_python_out=/workspace/generated \\
             --proto_path=/workspace/src \\
+            --pyi_out=/workspace/generated \\
             --proto_path=/usr/local/include \\
-            /workspace/src/**/*.proto
+            {} \\;"
         
-        # Fix imports for Python packages
+    # Fix imports for Python packages
+    docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T python-builder bash -c "
         find /workspace/generated -name '*.py' -exec sed -i 's/^import /from . import /g' {} \;
         
         # Format generated code
-        find /workspace/generated -name '*.py' -exec black --line-length=88 --target-version=py${PYTHON_VERSION} {} \;
+        find /workspace/generated -name '*.py' -exec black --line-length=88 --target-version=py$(echo ${PYTHON_VERSION} | tr -d '.') {} \;
         
         # Sort imports
         find /workspace/generated -name '*.py' -exec isort {} \;
@@ -195,82 +221,48 @@ generate_code() {
     print_success "Python code generated successfully"
 }
 
-# Function to create setup.py
-create_setup_py() {
-    print_status "Creating setup.py for Python package..."
+# Function to create package using uv and build wheel
+create_package_with_uv() {
+    print_status "Creating package using uv and building wheel..."
     
-    cat > "$OUTPUT_DIR/setup.py" << EOF
-#!/usr/bin/env python3
-"""
-Generated Python package from protobuf definitions.
-"""
+    # Create pyproject.toml
+    cat > "$OUTPUT_DIR/pyproject.toml" << EOF
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-from setuptools import setup, find_packages
+[project]
+name = "protos-python"
+version = "0.1.0"
+description = "Python client libraries generated from protobuf definitions"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Organization", email = "dev@yourorg.com"},
+]
+keywords = ["protobuf", "grpc", "api"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "grpcio>=${GRPC_VERSION}",
+    "grpcio-tools>=${GRPC_VERSION}",
+    "protobuf>=4.0.0",
+]
 
-with open("README.md", "r", encoding="utf-8") as fh:
-    long_description = fh.read()
-
-setup(
-    name="protos-python",
-    version="0.1.0",
-    author="Your Organization",
-    author_email="dev@yourorg.com",
-    description="Python client library generated from protobuf definitions",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
-    url="https://github.com/yourorg/protos",
-    packages=find_packages(),
-    classifiers=[
-        "Development Status :: 3 - Alpha",
-        "Intended Audience :: Developers",
-        "License :: OSI Approved :: MIT License",
-        "Operating System :: OS Independent",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11",
-        "Programming Language :: Python :: 3.12",
-    ],
-    python_requires=">=3.8",
-    install_requires=[
-        "grpcio>=${GRPC_VERSION}",
-        "grpcio-tools>=${GRPC_VERSION}",
-        "protobuf>=4.0.0",
-    ],
-    extras_require={
-        "dev": [
-            "black",
-            "isort",
-            "mypy",
-            "pytest",
-            "pytest-asyncio",
-        ],
-    },
-)
+[tool.hatch.build.targets.wheel]
+packages = ["api", "common", "domain"]
 EOF
 
-    print_success "setup.py created"
-}
-
-# Function to create requirements.txt
-create_requirements_txt() {
-    print_status "Creating requirements.txt..."
-    
-    cat > "$OUTPUT_DIR/requirements.txt" << EOF
-# Generated requirements for protos-python package
-grpcio>=${GRPC_VERSION}
-grpcio-tools>=${GRPC_VERSION}
-protobuf>=4.0.0
-EOF
-
-    print_success "requirements.txt created"
-}
-
-# Function to create README
-create_readme() {
-    print_status "Creating README.md..."
-    
+    # Create README.md
     cat > "$OUTPUT_DIR/README.md" << EOF
 # Protos Python Package
 
@@ -279,7 +271,7 @@ This package contains Python client libraries generated from protobuf definition
 ## Installation
 
 \`\`\`bash
-pip install -r requirements.txt
+pip install .
 \`\`\`
 
 ## Usage
@@ -306,7 +298,38 @@ pip install -e .[dev]
 - Python version: ${PYTHON_VERSION}
 EOF
 
-    print_success "README.md created"
+    # Create dist directory
+    mkdir -p "$OUTPUT_DIR/dist"
+    
+    # Use uv to build the wheel
+    print_status "Building wheel using uv..."
+    if command -v uv > /dev/null 2>&1; then
+        cd "$OUTPUT_DIR"
+        uv build --wheel --out-dir dist
+        print_success "Wheel built successfully in dist directory"
+    else
+        print_error "uv is not installed. Please install uv first: https://docs.astral.sh/uv/getting-started/installation/"
+        return 1
+    fi
+    
+    print_success "Package creation and wheel building completed"
+}
+
+# Function to copy generated code to target directory
+copy_generated_code() {
+    print_status "Copying generated code to target directory..."
+    
+    # Create target directory if it doesn't exist
+    mkdir -p "$TARGET_DIR"
+    
+    # Copy all generated files from output directory to target directory
+    if [ -d "$OUTPUT_DIR" ]; then
+        cp -r "$OUTPUT_DIR"/* "$TARGET_DIR/"
+        print_success "Generated code copied to: $TARGET_DIR"
+    else
+        print_error "Output directory not found: $OUTPUT_DIR"
+        return 1
+    fi
 }
 
 # Function to cleanup
@@ -335,9 +358,7 @@ main() {
     create_output_dir
     build_docker_image
     generate_code
-    create_setup_py
-    create_requirements_txt
-    create_readme
+    create_package_with_uv
     cleanup
     
     print_success "Python module generation completed successfully!"
