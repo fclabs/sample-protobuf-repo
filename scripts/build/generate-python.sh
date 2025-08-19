@@ -15,7 +15,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUTPUT_DIR="$PROJECT_ROOT/generated"
 PROTO_DIR="$PROJECT_ROOT/src"
 CONTAINER_NAME="protobuf-python-builder"
-TARGET_DIR="$PROJECT_ROOT/dist/python"
+TARGET_DIR="$PROJECT_ROOT/packages/python"
+PACKAGE_NAME="protos-python"
 
 # Default values
 PYTHON_VERSION="3.11"
@@ -132,6 +133,10 @@ clean_build() {
             rm -rf "$OUTPUT_DIR"
             print_success "Cleaned output directory"
         fi
+        if [[ -d "$TARGET_DIR" ]]; then
+            rm -rf "$TARGET_DIR"
+            print_success "Cleaned target directory"
+        fi
     fi
 }
 
@@ -225,32 +230,24 @@ generate_code() {
 create_package_with_uv() {
     print_status "Creating package using uv and building wheel..."
     
+    # Create package directory
+    mkdir -p "${TARGET_DIR}/${PACKAGE_NAME}"
+
+
     # Create pyproject.toml
-    cat > "$OUTPUT_DIR/pyproject.toml" << EOF
+    cat > "$TARGET_DIR/pyproject.toml" << EOF
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "protos-python"
+name = "${PACKAGE_NAME}"
 version = "0.1.0"
 description = "Python client libraries generated from protobuf definitions"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "MIT"}
+requires-python = ">=${PYTHON_VERSION}"
 authors = [
     {name = "Your Organization", email = "dev@yourorg.com"},
-]
-keywords = ["protobuf", "grpc", "api"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
 ]
 dependencies = [
     "grpcio>=${GRPC_VERSION}",
@@ -259,37 +256,14 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["api", "common", "domain"]
+packages = ["${PACKAGE_NAME}"]
 EOF
 
     # Create README.md
-    cat > "$OUTPUT_DIR/README.md" << EOF
+    cat > "${TARGET_DIR}/README.md" << EOF
 # Protos Python Package
 
 This package contains Python client libraries generated from protobuf definitions.
-
-## Installation
-
-\`\`\`bash
-pip install .
-\`\`\`
-
-## Usage
-
-\`\`\`python
-from api.v1 import user_pb2
-from api.v1 import user_pb2_grpc
-
-# Use the generated protobuf classes
-user = user_pb2.User()
-user.email = "user@example.com"
-\`\`\`
-
-## Development
-
-\`\`\`bash
-pip install -e .[dev]
-\`\`\`
 
 ## Generated from
 
@@ -298,13 +272,16 @@ pip install -e .[dev]
 - Python version: ${PYTHON_VERSION}
 EOF
 
+    # Copy the module files to the target directory
+    cp -r "$OUTPUT_DIR"/* "${TARGET_DIR}/${PACKAGE_NAME}/"
+
     # Create dist directory
-    mkdir -p "$OUTPUT_DIR/dist"
+    mkdir -p "${TARGET_DIR}/dist"
     
     # Use uv to build the wheel
     print_status "Building wheel using uv..."
     if command -v uv > /dev/null 2>&1; then
-        cd "$OUTPUT_DIR"
+        cd "${TARGET_DIR}"
         uv build --wheel --out-dir dist
         print_success "Wheel built successfully in dist directory"
     else
