@@ -1,0 +1,84 @@
+services:
+  python-builder:
+    build:
+      context: ..
+      dockerfile: containers/python/Dockerfile
+      args:
+        PYTHON_VERSION: "3.11"
+        GRPC_VERSION: "1.59.0"
+        PROTOC_VERSION: "25.1"
+    image: protobuf-python-builder
+    container_name: protobuf-python-builder
+    volumes:
+      - ../src:/workspace/src:ro
+      - ../generated:/workspace/generated
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    profiles:
+      - python
+      - all
+
+  typescript-builder:
+    build:
+      context: ..
+      dockerfile: containers/typescript/Dockerfile
+      args:
+        NODE_VERSION: "18"
+        GRPC_VERSION: "1.9.4"
+        PROTOC_VERSION: "25.1"
+        GENERATE_GRPC: "false"
+        GENERATE_GRPC_WEB: "false"
+    image: protobuf-typescript-builder
+    container_name: protobuf-typescript-builder
+    volumes:
+      - ../src:/workspace/src:ro
+      - ../generated:/workspace/generated
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    profiles:
+      - typescript
+      - all
+
+  typescript-grpc-builder:
+    build:
+      context: ..
+      dockerfile: containers/typescript/Dockerfile
+      args:
+        NODE_VERSION: "18"
+        GRPC_VERSION: "1.9.4"
+        PROTOC_VERSION: "25.1"
+        GENERATE_GRPC: "true"
+        GENERATE_GRPC_WEB: "false"
+    image: protobuf-typescript-grpc-builder
+    container_name: protobuf-typescript-grpc-builder
+    volumes:
+      - ../src:/workspace/src:ro
+      - ../generated:/workspace/generated
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    profiles:
+      - typescript-grpc
+
+  typescript-grpc-web-builder:
+    build:
+      context: ..
+      dockerfile: containers/typescript/Dockerfile
+      args:
+        NODE_VERSION: "18"
+        GRPC_VERSION: "1.9.4"
+        PROTOC_VERSION: "25.1"
+        GENERATE_GRPC: "false"
+        GENERATE_GRPC_WEB: "true"
+    image: protobuf-typescript-grpc-web-builder
+    container_name: protobuf-typescript-grpc-web-builder
+    volumes:
+      - ../src:/workspace/src:ro
+      - ../generated:/workspace/generated
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    profiles:
+      - typescript-grpc-web
+
+networks:
+  default:
+    name: protobuf-build-network
