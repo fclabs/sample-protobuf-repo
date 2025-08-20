@@ -12,10 +12,12 @@ NC='\033[0m' # No Color
 # Configuration
 # Find the repo root by looking for .git directory
 PROJECT_ROOT="$(git rev-parse --show-toplevel)"
-OUTPUT_DIR="$PROJECT_ROOT/generated/typescript"
+CODE_OUTPUT_DIR="generated/code/typescript"
+OUTPUT_DIR="$PROJECT_ROOT/${CODE_OUTPUT_DIR}"
 PROTO_DIR="$PROJECT_ROOT/src"
 CONTAINER_NAME="protobuf-typescript-builder"
-TARGET_DIR="$PROJECT_ROOT/packages/typescript"
+TARGET_DIR="$PROJECT_ROOT/generated/packages/typescript"
+ARTIFACT_DIR="$PROJECT_ROOT/artifacts/typescript"
 PACKAGE_NAME="protos-typescript"
 
 # Default values
@@ -213,8 +215,8 @@ generate_code() {
     docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T typescript-builder bash -c "
         # Find all proto files and generate TypeScript/JavaScript code
         find /workspace/src -name '*.proto' -exec /usr/bin/protoc \\
-            --js_out=import_style=commonjs,binary:/workspace/generated/typescript \\
-            --ts_out=/workspace/generated/typescript \\
+            --js_out=import_style=commonjs,binary:/workspace/${CODE_OUTPUT_DIR} \\
+            --ts_out=/workspace/${CODE_OUTPUT_DIR} \\
             --proto_path=/workspace/src \\
             --proto_path=/usr/local/include \\
             {} \\;"
@@ -223,8 +225,8 @@ generate_code() {
     if [[ "$GENERATE_GRPC" == true ]]; then
         docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T typescript-builder bash -c "
             find /workspace/src -name '*.proto' -exec npx grpc_tools_node_protoc \\
-                --js_out=import_style=commonjs,binary:/workspace/generated/typescript \\
-                --grpc_out=grpc_js:/workspace/generated/typescript \\
+                --js_out=import_style=commonjs,binary:/workspace/${CODE_OUTPUT_DIR} \\
+                --grpc_out=grpc_js:/workspace/${CODE_OUTPUT_DIR} \\
                 --proto_path=/workspace/src \\
                 --proto_path=/usr/local/include \\
                 {} \\;"
@@ -234,8 +236,8 @@ generate_code() {
     if [[ "$GENERATE_GRPC_WEB" == true ]]; then
         docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T typescript-builder bash -c "
             find /workspace/src -name '*.proto' -exec npx grpc_tools_node_protoc \\
-                --js_out=import_style=commonjs,binary:/workspace/generated/typescript \\
-                --grpc-web_out=import_style=typescript,mode=grpcwebtext:/workspace/generated/typescript \\
+                --js_out=import_style=commonjs,binary:/workspace/${CODE_OUTPUT_DIR} \\
+                --grpc-web_out=import_style=typescript,mode=grpcwebtext:/workspace/${CODE_OUTPUT_DIR} \\
                 --proto_path=/workspace/src \\
                 --proto_path=/usr/local/include \\
                 {} \\;"
@@ -244,25 +246,25 @@ generate_code() {
     # Post-process generated files
     docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T typescript-builder bash -c "
         # Create package structure - move all generated files to src directory
-        mkdir -p /workspace/generated/typescript/src
-        find /workspace/generated/typescript -maxdepth 1 -name '*.js' -exec mv {} /workspace/generated/typescript/src/ \; 2>/dev/null || true
-        find /workspace/generated/typescript -maxdepth 1 -name '*.ts' -exec mv {} /workspace/generated/typescript/src/ \; 2>/dev/null || true
-        find /workspace/generated/typescript -maxdepth 1 -name '*.d.ts' -exec mv {} /workspace/generated/typescript/src/ \; 2>/dev/null || true
+        mkdir -p /workspace/${CODE_OUTPUT_DIR}/src
+        find /workspace/${CODE_OUTPUT_DIR} -maxdepth 1 -name '*.js' -exec mv {} /workspace/${CODE_OUTPUT_DIR}/src/ \; 2>/dev/null || true
+        find /workspace/${CODE_OUTPUT_DIR} -maxdepth 1 -name '*.ts' -exec mv {} /workspace/${CODE_OUTPUT_DIR}/src/ \; 2>/dev/null || true
+        find /workspace/${CODE_OUTPUT_DIR} -maxdepth 1 -name '*.d.ts' -exec mv {} /workspace/${CODE_OUTPUT_DIR}/src/ \; 2>/dev/null || true
         
         # Move the api directory to src
-        if [ -d '/workspace/generated/typescript/api' ]; then
-            mv /workspace/generated/typescript/api /workspace/generated/typescript/src/
+        if [ -d '/workspace/${CODE_OUTPUT_DIR}/api' ]; then
+            mv /workspace/${CODE_OUTPUT_DIR}/api /workspace/${CODE_OUTPUT_DIR}/src/
         fi
         
         # Create index files
-        echo 'export * from '\''./src/api/v1/helloworld'\'';' > /workspace/generated/typescript/index.js
-        echo 'export * from '\''./src/api/v1/helloworld'\'';' > /workspace/generated/typescript/index.d.ts
+        echo 'export * from '\''./src/api/v1/helloworld'\'';' > /workspace/${CODE_OUTPUT_DIR}/index.js
+        echo 'export * from '\''./src/api/v1/helloworld'\'';' > /workspace/${CODE_OUTPUT_DIR}/index.d.ts
         
         # Format generated code
-        find /workspace/generated/typescript -name '*.ts' -o -name '*.js' | xargs npx prettier --write 2>/dev/null || true
+        find /workspace/${CODE_OUTPUT_DIR} \( -name '*.ts' -o -name '*.js' \) | xargs npx prettier --write 2>/dev/null || true
         
         # Set permissions
-        chmod -R 755 /workspace/generated/typescript
+        chmod -R 755 /workspace/${CODE_OUTPUT_DIR}
     "
     
     print_success "TypeScript/JavaScript code generated successfully"
@@ -284,26 +286,7 @@ create_package_with_npm() {
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "rm -rf dist",
-    "lint": "eslint src --ext .ts,.js",
-    "format": "prettier --write src/**/*.{ts,js}",
-    "test": "jest"
-  },
-  "keywords": [
-    "protobuf",
-    "grpc",
-    "typescript",
-    "javascript",
-    "api",
-    "client"
-  ],
-  "author": "Your Organization",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/yourorg/protos"
+    "build": "tsc"
   },
   "dependencies": {
     "protobufjs": "^7.2.0",
@@ -381,10 +364,10 @@ EOF
     npm pack
     
     # Move the tarball to a packages directory for easy access
-    mkdir -p "${PROJECT_ROOT}/artifacts/npm"
-    mv *.tgz "${PROJECT_ROOT}/artifacts/npm/"
+    mkdir -p "${ARTIFACT_DIR}"
+    mv *.tgz "${ARTIFACT_DIR}/"
     
-    print_success "npm package tarball created and moved to artifacts/npm directory"
+    print_success "npm package tarball created and moved to ${ARTIFACT_DIR} directory"
     print_success "Package creation and building completed"
 }
 
@@ -439,7 +422,7 @@ main() {
     print_success "TypeScript/JavaScript module generation completed successfully!"
     print_status "Generated files are available in: $OUTPUT_DIR"
     print_status "Built package is available in: $TARGET_DIR"
-    print_status "npm package tarball is available in: $PROJECT_ROOT/artifacts/npm"
+    print_status "npm package tarball is available in: $ARTIFACT_DIR"
 }
 
 # Trap cleanup on exit

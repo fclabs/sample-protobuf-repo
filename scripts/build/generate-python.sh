@@ -12,10 +12,11 @@ NC='\033[0m' # No Color
 # Configuration
 # Find the repo root by looking for .git directory
 PROJECT_ROOT="$(git rev-parse --show-toplevel)"
-OUTPUT_DIR="$PROJECT_ROOT/generated/python"
-PROTO_DIR="$PROJECT_ROOT/src"
+CODE_OUTPUT_DIR="generated/code/python"
+OUTPUT_DIR="${PROJECT_ROOT}/${CODE_OUTPUT_DIR}"
+PROTO_DIR="${PROJECT_ROOT}/src"
 CONTAINER_NAME="protobuf-python-builder"
-TARGET_DIR="$PROJECT_ROOT/packages/python"
+TARGET_DIR="$PROJECT_ROOT/generated/packages/python"
 ARTIFACT_DIR="$PROJECT_ROOT/artifacts/python"
 PACKAGE_NAME="protos-python"
 
@@ -138,6 +139,10 @@ clean_build() {
             rm -rf "$TARGET_DIR"
             print_success "Cleaned target directory"
         fi
+        if [[ -d "$PROJECT_ROOT/artifacts/wheel" ]]; then
+            rm -rf "$PROJECT_ROOT/artifacts/wheel"
+            print_success "Cleaned wheel artifacts directory"
+        fi
     fi
 }
 
@@ -200,28 +205,28 @@ generate_code() {
     docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T python-builder bash -c "
         # Find all proto files and generate Python code
         find /workspace/src -name '*.proto' -exec python -m grpc_tools.protoc \\
-            --python_out=/workspace/generated \\
-            --grpc_python_out=/workspace/generated \\
+            --python_out=/workspace/${CODE_OUTPUT_DIR} \\
+            --grpc_python_out=/workspace/${CODE_OUTPUT_DIR} \\
             --proto_path=/workspace/src \\
-            --pyi_out=/workspace/generated \\
+            --pyi_out=/workspace/${CODE_OUTPUT_DIR} \\
             --proto_path=/usr/local/include \\
             {} \\;"
         
     # Fix imports for Python packages
     docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T python-builder bash -c "
-        find /workspace/generated -name '*.py' -exec sed -i 's/^import /from . import /g' {} \;
+        find /workspace/${CODE_OUTPUT_DIR} -name '*.py' -exec sed -i 's/^import /from . import /g' {} \;
         
         # Format generated code
-        find /workspace/generated -name '*.py' -exec black --line-length=88 --target-version=py$(echo ${PYTHON_VERSION} | tr -d '.') {} \;
+        find /workspace/${CODE_OUTPUT_DIR} -name '*.py' -exec black --line-length=88 --target-version=py$(echo ${PYTHON_VERSION} | tr -d '.') {} \;
         
         # Sort imports
-        find /workspace/generated -name '*.py' -exec isort {} \;
+        find /workspace/${CODE_OUTPUT_DIR} -name '*.py' -exec isort {} \;
         
         # Create __init__.py files
-        find /workspace/generated -type d -exec touch {}/__init__.py \;
+        find /workspace/${CODE_OUTPUT_DIR} -type d -exec touch {}/__init__.py \;
         
         # Set permissions
-        chmod -R 755 /workspace/generated
+        chmod -R 755 /workspace/${CODE_OUTPUT_DIR}
     "
     
     print_success "Python code generated successfully"
@@ -233,7 +238,6 @@ create_package_with_uv() {
     
     # Create package directory
     mkdir -p "${TARGET_DIR}/${PACKAGE_NAME}"
-
 
     # Create pyproject.toml
     cat > "$TARGET_DIR/pyproject.toml" << EOF
@@ -293,6 +297,37 @@ EOF
     print_success "Package creation and wheel building completed"
 }
 
+# Function to move wheel artifacts to final location
+move_wheel_artifacts() {
+    print_status "Moving wheel artifacts to final location..."
+    
+    # Create artifacts/wheel directory
+    local wheel_artifact_dir="$PROJECT_ROOT/artifacts/wheel"
+    mkdir -p "$wheel_artifact_dir"
+    
+    # Move wheel files from dist to artifacts/wheel
+    if [ -d "${TARGET_DIR}/dist" ]; then
+        # Find and move all wheel files
+        find "${TARGET_DIR}/dist" -name "*.whl" -exec mv {} "$wheel_artifact_dir/" \;
+        
+        # Also move any other distribution files (sdist, etc.)
+        find "${TARGET_DIR}/dist" -name "*.tar.gz" -exec mv {} "$wheel_artifact_dir/" \;
+        
+        print_success "Wheel artifacts moved to: $wheel_artifact_dir"
+        
+        # List the moved artifacts
+        echo "Available artifacts:"
+        ls -la "$wheel_artifact_dir/"
+    else
+        print_error "Dist directory not found: ${TARGET_DIR}/dist"
+        return 1
+    fi
+    
+    # Clean up the dist directory
+    rm -rf "${TARGET_DIR}/dist"
+    print_status "Cleaned up temporary dist directory"
+}
+
 # Function to copy generated code to target directory
 copy_generated_code() {
     print_status "Copying generated code to target directory..."
@@ -337,10 +372,12 @@ main() {
     build_docker_image
     generate_code
     create_package_with_uv
+    move_wheel_artifacts
     cleanup
     
     print_success "Python module generation completed successfully!"
-    print_status "Generated files are available in: $OUTPUT_DIR"
+    print_status "Generated code available in: $OUTPUT_DIR"
+    print_status "Wheel artifacts available in: $PROJECT_ROOT/artifacts/wheel"
 }
 
 # Trap cleanup on exit
