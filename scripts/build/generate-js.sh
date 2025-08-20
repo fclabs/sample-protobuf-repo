@@ -10,20 +10,39 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-OUTPUT_DIR="$PROJECT_ROOT/generated/js"
+# Find the repo root by looking for .git directory
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+OUTPUT_DIR="$PROJECT_ROOT/generated/typescript"
 PROTO_DIR="$PROJECT_ROOT/src"
 CONTAINER_NAME="protobuf-typescript-builder"
+TARGET_DIR="$PROJECT_ROOT/packages/typescript"
+PACKAGE_NAME="protos-typescript"
 
 # Default values
-NODE_VERSION="18"
+NODE_VERSION="20"
 GRPC_VERSION="1.9.4"
 PROTOC_VERSION="25.1"
 CLEAN_BUILD=false
 VERBOSE=false
 GENERATE_GRPC=false
 GENERATE_GRPC_WEB=false
+
+# Function to detect protoc platform
+detect_protoc_platform() {
+    local arch=$(uname -m)
+    case "$arch" in
+        x86_64)
+            echo "linux-x86_64"
+            ;;
+        aarch64|arm64)
+            echo "linux-aarch_64"
+            ;;
+        *)
+            print_error "Unsupported architecture: $arch"
+            exit 1
+            ;;
+    esac
+}
 
 # Function to print colored output
 print_status() {
@@ -128,6 +147,10 @@ clean_build() {
             rm -rf "$OUTPUT_DIR"
             print_success "Cleaned output directory"
         fi
+        if [[ -d "$TARGET_DIR" ]]; then
+            rm -rf "$TARGET_DIR"
+            print_success "Cleaned target directory"
+        fi
     fi
 }
 
@@ -141,112 +164,35 @@ create_output_dir() {
 build_docker_image() {
     print_status "Building Docker image for Node.js $NODE_VERSION..."
     
-    cat > "$PROJECT_ROOT/Dockerfile.typescript" << EOF
-FROM node:${NODE_VERSION}-slim
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \\
-    curl \\
-    unzip \\
-    build-essential \\
-    && rm -rf /var/lib/apt/lists/*
-
-# Install protoc compiler
-RUN curl -L -o /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip \\
-    && unzip /tmp/protoc.zip -d /usr/local \\
-    && rm /tmp/protoc.zip
-
-# Set working directory
-WORKDIR /workspace
-
-# Copy package files
-COPY package.json package-lock.json* ./
-
-# Install Node.js dependencies
-RUN npm ci --only=production
-
-# Install global tools
-RUN npm install -g \\
-    protobufjs \\
-    @grpc/proto-loader \\
-    @grpc/grpc-js \\
-    grpc-tools \\
-    typescript \\
-    @types/node \\
-    prettier \\
-    eslint
-
-# Copy protobuf files
-COPY src/ /workspace/src/
-
-# Create output directory
-RUN mkdir -p /workspace/generated
-
-# Generate JavaScript/TypeScript code
-RUN npx pbjs \\
-    --target static-module \\
-    --wrap commonjs \\
-    --out /workspace/generated/protobuf.js \\
-    /workspace/src/**/*.proto
-
-# Generate TypeScript definitions
-RUN npx pbts \\
-    --out /workspace/generated/protobuf.d.ts \\
-    /workspace/generated/protobuf.js
-
-EOF
-
-    # Add gRPC generation if requested
-    if [[ "$GENERATE_GRPC" == true ]]; then
-        cat >> "$PROJECT_ROOT/Dockerfile.typescript" << EOF
-
-# Generate gRPC code
-RUN npx grpc_tools_node_protoc \\
-    --js_out=import_style=commonjs,binary:/workspace/generated \\
-    --grpc_out=grpc_js:/workspace/generated \\
-    --proto_path=/workspace/src \\
-    --proto_path=/usr/local/include \\
-    /workspace/src/**/*.proto
-EOF
+    local dockerfile_path="$PROJECT_ROOT/containers/typescript/Dockerfile"
+    
+    if [[ ! -f "$dockerfile_path" ]]; then
+        print_error "Dockerfile not found at: $dockerfile_path"
+        exit 1
     fi
-
-    # Add gRPC-Web generation if requested
-    if [[ "$GENERATE_GRPC_WEB" == true ]]; then
-        cat >> "$PROJECT_ROOT/Dockerfile.typescript" << EOF
-
-# Generate gRPC-Web code
-RUN npx grpc_tools_node_protoc \\
-    --js_out=import_style=commonjs,binary:/workspace/generated \\
-    --grpc-web_out=import_style=typescript,mode=grpcwebtext:/workspace/generated \\
-    --proto_path=/workspace/src \\
-    --proto_path=/usr/local/include \\
-    /workspace/src/**/*.proto
-EOF
-    fi
-
-    cat >> "$PROJECT_ROOT/Dockerfile.typescript" << EOF
-
-# Create package structure
-RUN mkdir -p /workspace/generated/src \\
-    && mv /workspace/generated/*.js /workspace/generated/src/ \\
-    && mv /workspace/generated/*.ts /workspace/generated/src/ \\
-    && mv /workspace/generated/*.d.ts /workspace/generated/src/
-
-# Create index files
-RUN echo "export * from './src/protobuf';" > /workspace/generated/index.js \\
-    && echo "export * from './src/protobuf';" > /workspace/generated/index.d.ts
-
-# Format generated code
-RUN find /workspace/generated -name "*.ts" -o -name "*.js" | xargs npx prettier --write
-
-# Set permissions
-RUN chmod -R 755 /workspace/generated
-EOF
-
+    
+    # Detect protoc platform
+    local protoc_platform=$(detect_protoc_platform)
+    print_status "Detected platform: $(uname -m) -> protoc platform: $protoc_platform"
+    
     if [[ "$VERBOSE" == true ]]; then
-        docker build -f "$PROJECT_ROOT/Dockerfile.typescript" -t "$CONTAINER_NAME" "$PROJECT_ROOT"
+        docker build \
+            --build-arg NODE_VERSION="$NODE_VERSION" \
+            --build-arg GRPC_VERSION="$GRPC_VERSION" \
+            --build-arg PROTOC_VERSION="$PROTOC_VERSION" \
+            --build-arg PROTOC_PLATFORM="$protoc_platform" \
+            -f "$dockerfile_path" \
+            -t "$CONTAINER_NAME" \
+            "$PROJECT_ROOT"
     else
-        docker build -f "$PROJECT_ROOT/Dockerfile.typescript" -t "$CONTAINER_NAME" "$PROJECT_ROOT" > /dev/null
+        docker build \
+            --build-arg NODE_VERSION="$NODE_VERSION" \
+            --build-arg GRPC_VERSION="$GRPC_VERSION" \
+            --build-arg PROTOC_VERSION="$PROTOC_VERSION" \
+            --build-arg PROTOC_PLATFORM="$protoc_platform" \
+            -f "$dockerfile_path" \
+            -t "$CONTAINER_NAME" \
+            "$PROJECT_ROOT" > /dev/null
     fi
     
     print_success "Docker image built successfully"
@@ -256,22 +202,83 @@ EOF
 generate_code() {
     print_status "Generating TypeScript/JavaScript code..."
     
-    # Run container and copy generated files
-    docker run --rm \
-        -v "$PROJECT_ROOT:/workspace" \
-        "$CONTAINER_NAME" \
-        bash -c "cp -r /workspace/generated/* /workspace/generated/"
+    # Start container if not running
+    if ! docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" ps typescript-builder | grep -q "Up"; then
+        print_status "Starting TypeScript builder container..."
+        docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" --profile typescript up -d typescript-builder
+        sleep 2  # Wait for container to be ready
+    fi
+    
+    # Generate TypeScript/JavaScript code using docker-compose exec
+    docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T typescript-builder bash -c "
+        # Find all proto files and generate TypeScript/JavaScript code
+        find /workspace/src -name '*.proto' -exec /usr/bin/protoc \\
+            --js_out=import_style=commonjs,binary:/workspace/generated/typescript \\
+            --ts_out=/workspace/generated/typescript \\
+            --proto_path=/workspace/src \\
+            --proto_path=/usr/local/include \\
+            {} \\;"
+    
+    # Generate gRPC code if requested
+    if [[ "$GENERATE_GRPC" == true ]]; then
+        docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T typescript-builder bash -c "
+            find /workspace/src -name '*.proto' -exec npx grpc_tools_node_protoc \\
+                --js_out=import_style=commonjs,binary:/workspace/generated/typescript \\
+                --grpc_out=grpc_js:/workspace/generated/typescript \\
+                --proto_path=/workspace/src \\
+                --proto_path=/usr/local/include \\
+                {} \\;"
+    fi
+    
+    # Generate gRPC-Web code if requested
+    if [[ "$GENERATE_GRPC_WEB" == true ]]; then
+        docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T typescript-builder bash -c "
+            find /workspace/src -name '*.proto' -exec npx grpc_tools_node_protoc \\
+                --js_out=import_style=commonjs,binary:/workspace/generated/typescript \\
+                --grpc-web_out=import_style=typescript,mode=grpcwebtext:/workspace/generated/typescript \\
+                --proto_path=/workspace/src \\
+                --proto_path=/usr/local/include \\
+                {} \\;"
+    fi
+    
+    # Post-process generated files
+    docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" exec -T typescript-builder bash -c "
+        # Create package structure - move all generated files to src directory
+        mkdir -p /workspace/generated/typescript/src
+        find /workspace/generated/typescript -maxdepth 1 -name '*.js' -exec mv {} /workspace/generated/typescript/src/ \; 2>/dev/null || true
+        find /workspace/generated/typescript -maxdepth 1 -name '*.ts' -exec mv {} /workspace/generated/typescript/src/ \; 2>/dev/null || true
+        find /workspace/generated/typescript -maxdepth 1 -name '*.d.ts' -exec mv {} /workspace/generated/typescript/src/ \; 2>/dev/null || true
+        
+        # Move the api directory to src
+        if [ -d '/workspace/generated/typescript/api' ]; then
+            mv /workspace/generated/typescript/api /workspace/generated/typescript/src/
+        fi
+        
+        # Create index files
+        echo 'export * from '\''./src/api/v1/helloworld'\'';' > /workspace/generated/typescript/index.js
+        echo 'export * from '\''./src/api/v1/helloworld'\'';' > /workspace/generated/typescript/index.d.ts
+        
+        # Format generated code
+        find /workspace/generated/typescript -name '*.ts' -o -name '*.js' | xargs npx prettier --write 2>/dev/null || true
+        
+        # Set permissions
+        chmod -R 755 /workspace/generated/typescript
+    "
     
     print_success "TypeScript/JavaScript code generated successfully"
 }
 
-# Function to create package.json
-create_package_json() {
-    print_status "Creating package.json for TypeScript package..."
+# Function to create package using npm and build
+create_package_with_npm() {
+    print_status "Creating package using npm and building..."
     
-    cat > "$OUTPUT_DIR/package.json" << EOF
+    # Create package directory
+    mkdir -p "${TARGET_DIR}/${PACKAGE_NAME}"
+    
+    # Create package.json
+    cat > "$TARGET_DIR/package.json" << EOF
 {
-  "name": "protos-typescript",
+  "name": "${PACKAGE_NAME}",
   "version": "0.1.0",
   "description": "TypeScript client library generated from protobuf definitions",
   "main": "index.js",
@@ -301,15 +308,8 @@ create_package_json() {
   "dependencies": {
     "protobufjs": "^7.2.0",
     "@grpc/grpc-js": "^${GRPC_VERSION}",
-    "@grpc/proto-loader": "^0.7.0"
-  },
-  "devDependencies": {
-    "@types/node": "^18.0.0",
-    "typescript": "^5.0.0",
-    "prettier": "^3.0.0",
-    "eslint": "^8.0.0",
-    "jest": "^29.0.0",
-    "@types/jest": "^29.0.0"
+    "@grpc/proto-loader": "^0.7.0",
+    "google-protobuf": "^3.21.2"
   },
   "engines": {
     "node": ">=${NODE_VERSION}.0.0"
@@ -317,14 +317,8 @@ create_package_json() {
 }
 EOF
 
-    print_success "package.json created"
-}
-
-# Function to create tsconfig.json
-create_tsconfig_json() {
-    print_status "Creating tsconfig.json..."
-    
-    cat > "$OUTPUT_DIR/tsconfig.json" << EOF
+    # Create tsconfig.json
+    cat > "$TARGET_DIR/tsconfig.json" << EOF
 {
   "compilerOptions": {
     "target": "ES2020",
@@ -353,43 +347,11 @@ create_tsconfig_json() {
 }
 EOF
 
-    print_success "tsconfig.json created"
-}
-
-# Function to create README
-create_readme() {
-    print_status "Creating README.md..."
-    
-    cat > "$OUTPUT_DIR/README.md" << EOF
+    # Create README.md
+    cat > "$TARGET_DIR/README.md" << EOF
 # Protos TypeScript Package
 
 This package contains TypeScript/JavaScript client libraries generated from protobuf definitions.
-
-## Installation
-
-\`\`\`bash
-npm install
-\`\`\`
-
-## Usage
-
-\`\`\`typescript
-import { User, UserService } from './src/protobuf';
-
-// Use the generated protobuf classes
-const user = new User();
-user.setEmail('user@example.com');
-\`\`\`
-
-## Development
-
-\`\`\`bash
-npm run dev      # Watch mode compilation
-npm run build    # Build for production
-npm run lint     # Run ESLint
-npm run format   # Format with Prettier
-npm test         # Run tests
-\`\`\`
 
 ## Generated from
 
@@ -400,18 +362,56 @@ npm test         # Run tests
 - gRPC-Web generation: ${GENERATE_GRPC_WEB}
 EOF
 
-    print_success "README.md created"
+    # Copy the module files to the target directory
+    cp -r "$OUTPUT_DIR"/* "${TARGET_DIR}/"
+    
+    # Create dist directory
+    mkdir -p "${TARGET_DIR}/dist"
+    
+    # Use npm to build the package
+    print_status "Building package using npm..."
+    cd "${TARGET_DIR}"
+    npm install
+    npm install --save-dev typescript @types/google-protobuf
+    npm run build
+    print_success "Package built successfully in dist directory"
+    
+    # Create npm package tarball for artifact repository
+    print_status "Creating npm package tarball..."
+    npm pack
+    
+    # Move the tarball to a packages directory for easy access
+    mkdir -p "${PROJECT_ROOT}/artifacts/npm"
+    mv *.tgz "${PROJECT_ROOT}/artifacts/npm/"
+    
+    print_success "npm package tarball created and moved to artifacts/npm directory"
+    print_success "Package creation and building completed"
+}
+
+# Function to copy generated code to target directory
+copy_generated_code() {
+    print_status "Copying generated code to target directory..."
+    
+    # Create target directory if it doesn't exist
+    mkdir -p "$TARGET_DIR"
+    
+    # Copy all generated files from output directory to target directory
+    if [ -d "$OUTPUT_DIR" ]; then
+        cp -r "$OUTPUT_DIR"/* "$TARGET_DIR/"
+        print_success "Generated code copied to: $TARGET_DIR"
+    else
+        print_error "Output directory not found: $OUTPUT_DIR"
+        return 1
+    fi
 }
 
 # Function to cleanup
 cleanup() {
     print_status "Cleaning up..."
     
-    # Remove Docker image
-    docker rmi "$CONTAINER_NAME" > /dev/null 2>&1 || true
-    
-    # Remove Dockerfile
-    rm -f "$PROJECT_ROOT/Dockerfile.typescript"
+    # Stop and remove container
+    docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" stop typescript-builder > /dev/null 2>&1 || true
+    docker-compose -f "$PROJECT_ROOT/containers/docker-compose.yml" rm -f typescript-builder > /dev/null 2>&1 || true
     
     print_success "Cleanup completed"
 }
@@ -433,13 +433,13 @@ main() {
     create_output_dir
     build_docker_image
     generate_code
-    create_package_json
-    create_tsconfig_json
-    create_readme
+    create_package_with_npm
     cleanup
     
     print_success "TypeScript/JavaScript module generation completed successfully!"
     print_status "Generated files are available in: $OUTPUT_DIR"
+    print_status "Built package is available in: $TARGET_DIR"
+    print_status "npm package tarball is available in: $PROJECT_ROOT/artifacts/npm"
 }
 
 # Trap cleanup on exit

@@ -10,12 +10,13 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-OUTPUT_DIR="$PROJECT_ROOT/generated"
+# Find the repo root by looking for .git directory
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+OUTPUT_DIR="$PROJECT_ROOT/generated/python"
 PROTO_DIR="$PROJECT_ROOT/src"
 CONTAINER_NAME="protobuf-python-builder"
 TARGET_DIR="$PROJECT_ROOT/packages/python"
+ARTIFACT_DIR="$PROJECT_ROOT/artifacts/python"
 PACKAGE_NAME="protos-python"
 
 # Default values
